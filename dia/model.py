@@ -655,7 +655,7 @@ class Dia:
 
         if use_torch_compile and not hasattr(self, "_compiled"):
             # Compilation can take about a minute.
-            self._prepare_generation = torch.compile(self._prepare_generation, dynamic=True, fullgraph=True)
+            # self._prepare_generation = torch.compile(self._prepare_generation, dynamic=True, fullgraph=True)
             self._decoder_step = torch.compile(self._decoder_step, fullgraph=True, mode="max-autotune")
             self._compiled = True
 
