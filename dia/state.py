@@ -139,6 +139,7 @@ class DecoderInferenceState:
         dec_cross_attn_cache: list[KVCache],
         compute_dtype: torch.dtype,
         max_generation_length: Optional[int] = None,
+        existing_self_attn_cache: Optional[list] = None,
     ) -> "DecoderInferenceState":
         """Creates DecoderInferenceParams from DiaConfig and a device."""
         device = enc_out.device
@@ -150,17 +151,20 @@ class DecoderInferenceState:
         dec_mask = torch.ones((2 * batch_size, 1), dtype=torch.bool, device=device)
         cross_attn_mask = create_attn_mask(dec_mask, enc_state.padding_mask, device, is_causal=False)
 
-        self_attn_cache = [
-            KVCache(
-                batch_size,
-                config.decoder_config.num_key_value_heads,
-                max_audio_len,
-                config.decoder_config.head_dim,
-                compute_dtype,
-                device,
-            )
-            for _ in range(config.decoder_config.num_hidden_layers)
-        ]
+        if existing_self_attn_cache is not None:
+            self_attn_cache = existing_self_attn_cache
+        else:
+            self_attn_cache = [
+                KVCache(
+                    batch_size,
+                    config.decoder_config.num_key_value_heads,
+                    max_audio_len,
+                    config.decoder_config.head_dim,
+                    compute_dtype,
+                    device,
+                )
+                for _ in range(config.decoder_config.num_hidden_layers)
+            ]
 
         return cls(
             device=device,

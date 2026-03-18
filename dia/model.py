@@ -10,7 +10,7 @@ import torchaudio
 from .audio import apply_audio_delay, build_delay_indices, build_revert_indices, revert_audio_delay
 from .config import DiaConfig
 from .layers import DiaModel
-from .state import DecoderInferenceState, DecoderOutput, EncoderInferenceState
+from .state import DecoderInferenceState, DecoderOutput, EncoderInferenceState, KVCache
 
 
 DEFAULT_SAMPLE_RATE = 44100
@@ -121,6 +121,9 @@ class Dia:
         self.dac_model = None
         self._compiled_step = None
         self.load_dac = load_dac
+        self._self_attn_cache: list[KVCache] | None = None
+        self._cached_batch_size: int | None = None
+        self._cached_max_tokens: int | None = None
 
         if not self.load_dac:
             print("Warning: DAC model will not be loaded. This is not recommended.")
@@ -346,6 +349,7 @@ class Dia:
         audio_prompts: list[torch.Tensor | None],
         max_tokens: int | None = None,
         attn_fn: Callable = F.scaled_dot_product_attention,
+        self_attn_cache: list[KVCache] | None = None,
     ):
         """Initializes the model state for generation.
 
@@ -382,6 +386,7 @@ class Dia:
             dec_cross_attn_cache,
             self.compute_dtype,
             max_generation_length=max_tokens,
+            existing_self_attn_cache=self_attn_cache,
         )
         prefill, prefill_steps = self._prepare_audio_prompt(audio_prompts)
 
@@ -676,7 +681,33 @@ class Dia:
             text = [self._encode_text(text)]
         text = self._pad_text_input(text)
 
-        dec_state, dec_output = self._prepare_generation(text, audio_prompt, max_tokens=max_tokens)
+        effective_max_tokens = max_tokens or self.config.decoder_config.max_position_embeddings
+        if (
+            self._self_attn_cache is None
+            or self._cached_batch_size != batch_size
+            or self._cached_max_tokens != effective_max_tokens
+        ):
+            self._self_attn_cache = [
+                KVCache(
+                    batch_size,
+                    self.config.decoder_config.num_key_value_heads,
+                    effective_max_tokens,
+                    self.config.decoder_config.head_dim,
+                    self.compute_dtype,
+                    self.device,
+                )
+                for _ in range(self.config.decoder_config.num_hidden_layers)
+            ]
+            self._cached_batch_size = batch_size
+            self._cached_max_tokens = effective_max_tokens
+        else:
+            for cache in self._self_attn_cache:
+                cache.k.zero_()
+                cache.v.zero_()
+
+        dec_state, dec_output = self._prepare_generation(
+            text, audio_prompt, max_tokens=max_tokens, self_attn_cache=self._self_attn_cache
+        )
         dec_step = min(dec_output.prefill_steps) - 1
         current_idx = torch.tensor([dec_step], device=self.device)
 
@@ -797,6 +828,11 @@ class Dia:
             outputs = self._generate_output(generated_codes, lengths_Bx)
         else:
             print("Warning: Nothing generated for any sequence in the batch.")
+            del dec_state
             outputs = [None] * batch_size
+
+        del dec_output
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return outputs if batch_size > 1 else outputs[0]
