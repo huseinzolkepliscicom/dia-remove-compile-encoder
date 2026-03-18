@@ -763,13 +763,17 @@ class Decoder(nn.Module):
     def precompute_cross_attn_cache(
         self,
         enc_out: torch.Tensor,  # (B, S, E)
+        existing_cache: list[KVCache] | None = None,
     ) -> list[KVCache]:
         """
         Computes the Key and Value tensors for cross-attention for each layer from the encoder output.
+        If existing_cache is provided, values are copied in-place into those buffers so that the
+        same tensor objects (and GPU memory addresses) are reused across calls, preventing CUDA
+        graph recapture.
         """
         per_layer_kv_cache: list[KVCache] = []
 
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             cross_attn_module = layer.cross_attention
             k_proj = cross_attn_module.k_proj(enc_out)
             v_proj = cross_attn_module.v_proj(enc_out)
@@ -777,7 +781,12 @@ class Decoder(nn.Module):
             k = k_proj.transpose(1, 2)
             v = v_proj.transpose(1, 2)
 
-            per_layer_kv_cache.append(KVCache.from_kv(k, v))
+            if existing_cache is not None:
+                existing_cache[i].k.copy_(k)
+                existing_cache[i].v.copy_(v)
+                per_layer_kv_cache.append(existing_cache[i])
+            else:
+                per_layer_kv_cache.append(KVCache.from_kv(k, v))
 
         return per_layer_kv_cache
 

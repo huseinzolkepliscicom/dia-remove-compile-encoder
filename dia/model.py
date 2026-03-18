@@ -122,6 +122,7 @@ class Dia:
         self._compiled_step = None
         self.load_dac = load_dac
         self._self_attn_cache: list[KVCache] | None = None
+        self._cross_attn_cache: list[KVCache] | None = None
         self._cached_batch_size: int | None = None
         self._cached_max_tokens: int | None = None
 
@@ -378,7 +379,11 @@ class Dia:
         enc_state = EncoderInferenceState.new(self.config, enc_input_cond)
         encoder_out = self.model.encoder(enc_input, enc_state)
 
-        dec_cross_attn_cache = self.model.decoder.precompute_cross_attn_cache(encoder_out)
+        dec_cross_attn_cache = self.model.decoder.precompute_cross_attn_cache(
+            encoder_out, existing_cache=self._cross_attn_cache
+        )
+        if self._cross_attn_cache is None:
+            self._cross_attn_cache = dec_cross_attn_cache
         dec_state = DecoderInferenceState.new(
             self.config,
             enc_state,
@@ -698,6 +703,7 @@ class Dia:
                 )
                 for _ in range(self.config.decoder_config.num_hidden_layers)
             ]
+            self._cross_attn_cache = None  # force reallocation when batch size changes
             self._cached_batch_size = batch_size
             self._cached_max_tokens = effective_max_tokens
         else:
